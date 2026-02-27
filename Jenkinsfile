@@ -1,58 +1,46 @@
-pipeline {
-    agent none
-    stages {
-        stage('Build') {
-            agent {
-                docker {
-                    image 'python:2-alpine'
-                }
-            }
-            steps {
-                sh 'python -m py_compile sources/add2vals.py sources/calc.py'
-                stash(name: 'compiled-results', includes: 'sources/*.py*')
-            }
-        }
-        stage('Test') {
-            agent {
-                docker {
-                    image 'qnib/pytest'
-                }
-            }
-            steps {
-                sh 'py.test --verbose --junit-xml test-reports/results.xml sources/test_calc.py'
-            }
-            post {
-                always {
-                    junit 'test-reports/results.xml'
-                }
-            }
-        }
-        stage('Manual Approval') {
-            steps {
-                input(message: 'Lanjutkan ke tahap Deploy?', ok: 'Proceed', submitter: 'user', parameters: [[$class: 'BooleanParameterDefinition', defaultValue: true, description: 'Pilih Proceed untuk melanjutkan atau Abort untuk menghentikan.', name: 'proceed']])
-            }
-        }
-        stage('Deploy') {
-            agent any
-            environment {
-                VOLUME = '$(pwd)/sources:/src'
-                IMAGE = 'cdrx/pyinstaller-linux:python2'
-            }
-            steps {
-                dir(path: env.BUILD_ID) {
-                    unstash(name: 'compiled-results')
-                    sh "docker run --rm -v ${VOLUME} ${IMAGE} 'pyinstaller -F add2vals.py'"
-                }
-            }
-            post {
-                success {
-                    archiveArtifacts "${env.BUILD_ID}/sources/dist/add2vals"
-                    sh "docker run --rm -v ${VOLUME} ${IMAGE} 'rm -rf build dist'"
-                    // Menjeda eksekusi pipeline selama 1 menit
-                    sleep time: 1, unit: 'MINUTES'
-                }
-            }
+node {
+    stage('Build') {
+        docker.image('python:2-alpine').inside {
+            sh 'python -m py_compile sources/add2vals.py sources/calc.py'
+            stash name: 'compiled-results', includes: 'sources/*.py*'
         }
     }
+
+    stage('Test') {
+        docker.image('qnib/pytest').inside {
+            sh 'py.test --verbose --junit-xml test-reports/results.xml sources/test_calc.py'
+        }
+        // post actions
+        junit 'test-reports/results.xml'
+    }
+
+    stage('Manual Approval') {
+        input(
+            message: 'Lanjutkan ke tahap Deploy?',
+            ok: 'Proceed',
+            submitter: 'user',
+            parameters: [
+                [$class: 'BooleanParameterDefinition',
+                 defaultValue: true,
+                 description: 'Pilih Proceed untuk melanjutkan atau Abort untuk menghentikan.',
+                 name: 'proceed']
+            ]
+        )
+    }
+
+    stage('Deploy') {
+        // environment variables
+        def VOLUME = "${pwd()}/sources:/src"
+        def IMAGE = 'cdrx/pyinstaller-linux:python2'
+
+        dir(env.BUILD_ID) {
+            unstash 'compiled-results'
+            sh "docker run --rm -v ${VOLUME} ${IMAGE} pyinstaller -F add2vals.py"
+        }
+
+        // post success actions
+        archiveArtifacts artifacts: "${env.BUILD_ID}/sources/dist/add2vals"
+        sh "docker run --rm -v ${VOLUME} ${IMAGE} rm -rf build dist"
+        sleep time: 1, unit: 'MINUTES'
+    }
 }
-    
